@@ -49,7 +49,7 @@ Want to chat about GitHero, share ideas, or ask questions? [Start a discussion](
 |----------|-------------|
 | [githero.dev](https://githero.dev) | Main website - sign up and start tracking |
 | [Widget Docs](https://githero.dev/docs/widget) | How to embed your GitHero widget |
-| [X/Twitter](https://x.com/mewset) | Follow for updates |
+| [X/Twitter](https://x.com/githerodev) | Follow for updates |
 
 ---
 
