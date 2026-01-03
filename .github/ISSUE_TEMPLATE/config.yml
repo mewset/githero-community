@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 General Discussion
+    url: https://github.com/mewset/githero-community/discussions/new?category=general
+    about: Chat about GitHero, share ideas, or ask questions
+  - name: 🙋 Q&A
+    url: https://github.com/mewset/githero-community/discussions/new?category=q-a
+    about: Ask questions and get help from the community
+  - name: 🌐 GitHero Website
+    url: https://githero.dev
+    about: Visit the main GitHero website
