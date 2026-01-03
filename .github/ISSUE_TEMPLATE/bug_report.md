@@ -23,6 +23,9 @@ What actually happened.
 ## Screenshots
 If applicable, add screenshots to help explain the problem.
 
+## Console Log
+If applicable, paste any relevant browser console errors here.
+
 ## Environment
 - **Browser**: [e.g. Chrome 120, Firefox 121]
 - **OS**: [e.g. Windows 11, macOS Sonoma, Ubuntu 24.04]
