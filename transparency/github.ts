@@ -660,3 +660,39 @@ export type {
   GitHubSearchIssueItem,
   GitHubReviewWithReactions,
 };
+
+// ============================================================================
+// Utility functions for public GitHub data (no authentication required)
+// ============================================================================
+
+/**
+ * Checks if a GitHub user exists by attempting to fetch their avatar.
+ * Uses the public GitHub avatar CDN which doesn't require authentication.
+ *
+ * @param username - GitHub username to check
+ * @returns true if user exists, false otherwise
+ */
+export async function checkGitHubUserExists(
+  username: string
+): Promise<boolean> {
+  try {
+    const res = await fetch(`https://github.com/${username}.png`, {
+      method: "HEAD",
+      next: { revalidate: 86400 }, // Cache for 24 hours
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Gets the GitHub avatar URL for a username.
+ * This URL works even for users not in our database.
+ *
+ * @param username - GitHub username
+ * @returns Avatar URL
+ */
+export function getGitHubAvatarUrl(username: string): string {
+  return `https://github.com/${username}.png`;
+}
