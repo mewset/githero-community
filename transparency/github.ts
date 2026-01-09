@@ -615,6 +615,94 @@ export class GitHubService {
     }
   }
 
+  // Sprint 5: Get merged PRs to specific OSS projects
+  async getOSSContributions(
+    username: string,
+    projects: Array<{ owner: string; repo: string }>
+  ): Promise<Map<string, number>> {
+    const contributions = new Map<string, number>();
+
+    // Initialize all projects with 0
+    for (const project of projects) {
+      const key = `${project.owner}/${project.repo}`.toLowerCase();
+      contributions.set(key, 0);
+    }
+
+    // Batch projects into groups to reduce API calls
+    // GitHub search API allows OR queries within repo filter
+    const BATCH_SIZE = 5; // Don't batch too many to avoid query length limits
+
+    for (let i = 0; i < projects.length; i += BATCH_SIZE) {
+      const batch = projects.slice(i, i + BATCH_SIZE);
+
+      try {
+        // Build the search query for this batch
+        // Query: author:username type:pr is:merged repo:owner1/repo1 repo:owner2/repo2 ...
+        const repoFilters = batch
+          .map((p) => `repo:${p.owner}/${p.repo}`)
+          .join(" ");
+        const searchQuery = `author:${username} type:pr is:merged ${repoFilters}`;
+
+        const searchResults = await this.fetchREST<{
+          total_count: number;
+          items: Array<{
+            repository_url: string;
+            number: number;
+          }>;
+        }>(
+          `/search/issues?q=${encodeURIComponent(searchQuery)}&per_page=100`
+        );
+
+        // Count contributions per project from the results
+        for (const item of searchResults.items) {
+          // Extract owner/repo from repository_url
+          const repoMatch = item.repository_url.match(
+            /repos\/([^/]+)\/([^/]+)$/
+          );
+          if (repoMatch) {
+            const [, owner, repo] = repoMatch;
+            const key = `${owner}/${repo}`.toLowerCase();
+            const current = contributions.get(key) || 0;
+            contributions.set(key, current + 1);
+          }
+        }
+
+        // If there are more than 100 results in a batch, we need individual queries
+        if (searchResults.total_count > 100) {
+          // Query each project individually to get accurate counts
+          for (const project of batch) {
+            const key = `${project.owner}/${project.repo}`.toLowerCase();
+            const singleQuery = `author:${username} type:pr is:merged repo:${project.owner}/${project.repo}`;
+            const singleResults = await this.fetchREST<{ total_count: number }>(
+              `/search/issues?q=${encodeURIComponent(singleQuery)}&per_page=1`
+            );
+            contributions.set(key, singleResults.total_count);
+          }
+        }
+      } catch (error) {
+        console.error(
+          `Failed to fetch OSS contributions for batch ${i}:`,
+          error
+        );
+        // On error, try individual queries for this batch
+        for (const project of batch) {
+          try {
+            const key = `${project.owner}/${project.repo}`.toLowerCase();
+            const singleQuery = `author:${username} type:pr is:merged repo:${project.owner}/${project.repo}`;
+            const singleResults = await this.fetchREST<{ total_count: number }>(
+              `/search/issues?q=${encodeURIComponent(singleQuery)}&per_page=1`
+            );
+            contributions.set(key, singleResults.total_count);
+          } catch {
+            // Keep 0 for failed projects
+          }
+        }
+      }
+    }
+
+    return contributions;
+  }
+
   calculateStreak(
     weeks: ContributionWeek[]
   ): { current: number; longest: number } {
