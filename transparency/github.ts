@@ -200,6 +200,21 @@ export class GitHubService {
     });
 
     if (!response.ok) {
+      // Handle rate limiting explicitly
+      if (response.status === 429 || response.status === 403) {
+        const retryAfter = response.headers.get("Retry-After") || "60";
+        const rateLimitRemaining = response.headers.get("X-RateLimit-Remaining");
+
+        if (response.status === 403 && rateLimitRemaining !== "0") {
+          // 403 but not rate limited - different error
+          throw new Error(`GitHub API forbidden: ${response.status}`);
+        }
+
+        throw new Error(
+          `GitHub API rate limited. Retry after ${retryAfter} seconds.`
+        );
+      }
+
       throw new Error(`GitHub API error: ${response.status}`);
     }
 
@@ -217,6 +232,20 @@ export class GitHubService {
     });
 
     if (!response.ok) {
+      // Handle rate limiting explicitly
+      if (response.status === 429 || response.status === 403) {
+        const retryAfter = response.headers.get("Retry-After") || "60";
+        const rateLimitRemaining = response.headers.get("X-RateLimit-Remaining");
+
+        if (response.status === 403 && rateLimitRemaining !== "0") {
+          throw new Error(`GitHub GraphQL forbidden: ${response.status}`);
+        }
+
+        throw new Error(
+          `GitHub API rate limited. Retry after ${retryAfter} seconds.`
+        );
+      }
+
       throw new Error(`GitHub GraphQL error: ${response.status}`);
     }
 
