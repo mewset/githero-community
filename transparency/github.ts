@@ -424,13 +424,16 @@ export class GitHubService {
 
         if (pageCommits.length === 0) break;
 
-        // Fetch stats for each commit (individual API calls needed for stats)
-        for (const commit of pageCommits) {
-          if (commits.length >= limit) break;
-          const detailed = await this.getCommitDetails(owner, repo, commit.sha);
-          if (detailed) {
-            commits.push(detailed);
-          }
+        // Fetch stats for each commit in parallel batches (10 concurrent requests)
+        const commitsToFetch = pageCommits.slice(0, limit - commits.length);
+        const BATCH_SIZE = 10;
+
+        for (let i = 0; i < commitsToFetch.length; i += BATCH_SIZE) {
+          const batch = commitsToFetch.slice(i, i + BATCH_SIZE);
+          const detailedBatch = await Promise.all(
+            batch.map(commit => this.getCommitDetails(owner, repo, commit.sha))
+          );
+          commits.push(...detailedBatch.filter((d): d is GitHubCommitDetail => d !== null));
         }
 
         if (pageCommits.length < perPage) break;
@@ -458,23 +461,27 @@ export class GitHubService {
         items: GitHubSearchPRItem[];
       }>(`/search/issues?q=${encodeURIComponent(searchQuery)}&per_page=${Math.min(limit, 100)}&sort=created&order=desc`);
 
-      // Fetch detailed info for each PR
-      for (const item of searchResults.items.slice(0, limit)) {
-        try {
-          // Extract owner/repo from repository_url
-          const repoMatch = item.repository_url.match(
-            /repos\/([^/]+)\/([^/]+)$/
-          );
-          if (!repoMatch) continue;
+      // Prepare PR items with owner/repo info
+      const prItems = searchResults.items.slice(0, limit).map(item => {
+        const repoMatch = item.repository_url.match(/repos\/([^/]+)\/([^/]+)$/);
+        if (!repoMatch) return null;
+        return { owner: repoMatch[1], repo: repoMatch[2], number: item.number };
+      }).filter((item): item is { owner: string; repo: string; number: number } => item !== null);
 
-          const [, owner, repo] = repoMatch;
-          const prDetail = await this.fetchREST<GitHubPRDetail>(
-            `/repos/${owner}/${repo}/pulls/${item.number}`
-          );
-          prs.push(prDetail);
-        } catch {
-          // Skip PRs we can't access
-          continue;
+      // Fetch detailed info in parallel batches (10 concurrent requests)
+      const BATCH_SIZE = 10;
+      for (let i = 0; i < prItems.length; i += BATCH_SIZE) {
+        const batch = prItems.slice(i, i + BATCH_SIZE);
+        const batchResults = await Promise.allSettled(
+          batch.map(item =>
+            this.fetchREST<GitHubPRDetail>(`/repos/${item.owner}/${item.repo}/pulls/${item.number}`)
+          )
+        );
+        // Only add successful fetches
+        for (const result of batchResults) {
+          if (result.status === "fulfilled") {
+            prs.push(result.value);
+          }
         }
       }
     } catch (error) {
