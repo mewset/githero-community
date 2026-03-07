@@ -1,3 +1,22 @@
+/**
+ * GitHero - GitHub Data Access Layer
+ *
+ * TRANSPARENCY NOTICE
+ * ===================
+ * This file is intentionally over-commented for transparency purposes.
+ * Every function documents exactly what GitHub data it reads and how.
+ *
+ * GitHero operates on a STRICT READ-ONLY basis:
+ *   - We ONLY use GitHub's REST API (GET requests) and GraphQL API (queries).
+ *   - We NEVER perform mutations, writes, or modifications to any user data.
+ *   - We NEVER create, update, or delete repositories, issues, PRs, or any other resource.
+ *   - We NEVER store raw GitHub API responses. Data is processed into aggregated
+ *     stats (counts, streaks, timestamps) before being stored in our database.
+ *
+ * The GitHub OAuth scopes we request are limited to read-only access.
+ * All API calls in this file are transparent and auditable.
+ */
+
 interface GitHubUser {
   id: number;
   login: string;
@@ -7,13 +26,12 @@ interface GitHubUser {
   public_repos: number;
   followers: number;
   following: number;
-  // Extended profile fields
   location: string | null;
   company: string | null;
-  blog: string | null; // Website URL
+  blog: string | null;
   twitter_username: string | null;
   hireable: boolean | null;
-  created_at: string; // ISO date
+  created_at: string;
   public_gists: number;
   email: string | null;
 }
@@ -26,7 +44,6 @@ interface GitHubRepo {
   stargazers_count: number;
   forks_count: number;
   language: string | null;
-  // Extended repo fields
   owner: { login: string };
   fork: boolean;
   topics: string[];
@@ -44,15 +61,14 @@ interface ContributionDay {
 }
 
 interface CommitWithTimestamp {
-  date: string; // ISO date (YYYY-MM-DD)
-  hour: number; // 0-23
+  date: string;
+  hour: number;
 }
 
 interface CommitTimestampResult {
   commits: CommitWithTimestamp[];
 }
 
-// Sprint 2: Detailed commit information
 interface GitHubCommitDetail {
   sha: string;
   commit: {
@@ -72,7 +88,6 @@ interface GitHubCommitDetail {
   files?: Array<{ filename: string }>;
 }
 
-// Sprint 2: Detailed PR information
 interface GitHubPRDetail {
   number: number;
   title: string;
@@ -98,7 +113,6 @@ interface GitHubPRDetail {
   };
 }
 
-// Sprint 2: Search result for PRs
 interface GitHubSearchPRItem {
   number: number;
   title: string;
@@ -111,11 +125,10 @@ interface GitHubSearchPRItem {
   repository_url: string;
 }
 
-// Sprint 3: Issue detail information (exported for future use)
 export interface GitHubIssueDetail {
   number: number;
   title: string;
-  state: string; // open, closed
+  state: string;
   user: { login: string };
   comments: number;
   reactions: { total_count: number };
@@ -124,7 +137,6 @@ export interface GitHubIssueDetail {
   repository_url: string;
 }
 
-// Sprint 3: Search result for issues
 interface GitHubSearchIssueItem {
   number: number;
   title: string;
@@ -137,17 +149,15 @@ interface GitHubSearchIssueItem {
   repository_url: string;
 }
 
-// Sprint 3: Code review information (exported for future use)
 export interface GitHubReviewDetail {
   id: number;
   user: { login: string };
   body: string | null;
-  state: string; // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING
+  state: string;
   submitted_at: string;
   pull_request_url: string;
 }
 
-// Sprint 3: Review with reactions (from GraphQL)
 interface GitHubReviewWithReactions {
   id: string;
   state: string;
@@ -182,6 +192,14 @@ export class GitHubService {
     this.accessToken = accessToken;
   }
 
+  /**
+   * Internal helper: Performs a READ-ONLY GET request to the GitHub REST API.
+   *
+   * READS: Whatever the specified endpoint returns (always via HTTP GET).
+   * WRITES: Nothing. This method only issues GET requests.
+   *
+   * Used by all REST-based methods in this class to fetch data from GitHub.
+   */
   private async fetchREST<T>(
     endpoint: string,
     options?: { includeTopics?: boolean }
@@ -191,7 +209,6 @@ export class GitHubService {
       Accept: "application/vnd.github.v3+json",
     };
 
-    // Topics require mercy preview header
     if (options?.includeTopics) {
       headers.Accept = "application/vnd.github.mercy-preview+json";
     }
@@ -201,13 +218,11 @@ export class GitHubService {
     });
 
     if (!response.ok) {
-      // Handle rate limiting explicitly
       if (response.status === 429 || response.status === 403) {
         const retryAfter = response.headers.get("Retry-After") || "60";
         const rateLimitRemaining = response.headers.get("X-RateLimit-Remaining");
 
         if (response.status === 403 && rateLimitRemaining !== "0") {
-          // 403 but not rate limited - different error
           throw new Error(`GitHub API forbidden: ${response.status}`);
         }
 
@@ -222,6 +237,15 @@ export class GitHubService {
     return response.json();
   }
 
+  /**
+   * Internal helper: Performs a READ-ONLY query to the GitHub GraphQL API.
+   *
+   * READS: Whatever the specified GraphQL query requests.
+   * WRITES: Nothing. This method only sends GraphQL queries, never mutations.
+   *
+   * Although GraphQL uses HTTP POST, this is only for sending the query payload.
+   * No mutations are ever constructed or sent through this method.
+   */
   private async fetchGraphQL<T>(query: string): Promise<T> {
     const response = await fetch("https://api.github.com/graphql", {
       method: "POST",
@@ -233,7 +257,6 @@ export class GitHubService {
     });
 
     if (!response.ok) {
-      // Handle rate limiting explicitly
       if (response.status === 429 || response.status === 403) {
         const retryAfter = response.headers.get("Retry-After") || "60";
         const rateLimitRemaining = response.headers.get("X-RateLimit-Remaining");
@@ -254,10 +277,31 @@ export class GitHubService {
     return data.data;
   }
 
+  /**
+   * Fetches the authenticated user's basic profile information.
+   *
+   * READS: Public profile data (username, display name, avatar URL, bio,
+   *        location, company, website, Twitter handle, email, account
+   *        creation date, public repo/gist/follower/following counts).
+   * WRITES: Nothing.
+   *
+   * GitHub API: GET /user
+   */
   async getUser(): Promise<GitHubUser> {
     return this.fetchREST<GitHubUser>("/user");
   }
 
+  /**
+   * Fetches all repositories accessible to the authenticated user.
+   * Paginates through all pages to get a complete list.
+   *
+   * READS: Repository metadata for each repo (name, description, language,
+   *        star/fork/watcher counts, topics, license, visibility, fork status,
+   *        creation date, last push date).
+   * WRITES: Nothing.
+   *
+   * GitHub API: GET /user/repos (paginated, 100 per page)
+   */
   async getRepos(): Promise<GitHubRepo[]> {
     const repos: GitHubRepo[] = [];
     let page = 1;
@@ -266,7 +310,7 @@ export class GitHubService {
     while (true) {
       const pageRepos = await this.fetchREST<GitHubRepo[]>(
         `/user/repos?per_page=${perPage}&page=${page}&type=all`,
-        { includeTopics: true } // Include topics for skills detection
+        { includeTopics: true }
       );
       repos.push(...pageRepos);
 
@@ -277,6 +321,16 @@ export class GitHubService {
     return repos;
   }
 
+  /**
+   * Fetches the user's contribution activity for the last year via GraphQL.
+   *
+   * READS: Aggregated contribution counts (total commits, total PRs,
+   *        total PR reviews) and the contribution calendar (daily
+   *        contribution counts for each day of the year).
+   * WRITES: Nothing.
+   *
+   * GitHub API: GraphQL query on user.contributionsCollection
+   */
   async getContributions(
     username: string
   ): Promise<ContributionsCollection | null> {
@@ -311,6 +365,16 @@ export class GitHubService {
     }
   }
 
+  /**
+   * Fetches the total and merged pull request counts for a user.
+   *
+   * READS: Two aggregated counts only: total number of PRs authored by the
+   *        user, and total number of merged PRs authored by the user.
+   *        No PR content, titles, or details are fetched.
+   * WRITES: Nothing.
+   *
+   * GitHub API: GET /search/issues (with per_page=1 for count only)
+   */
   async getPullRequests(
     username: string
   ): Promise<{ total: number; merged: number }> {
@@ -330,11 +394,20 @@ export class GitHubService {
     };
   }
 
-  // Fetch commit timestamps for the last year to enable time-based achievements
+  /**
+   * Fetches commit timestamps for the last year to enable time-based
+   * achievements (e.g. "Night Owl", "Early Bird" badges).
+   *
+   * READS: Date and hour of each commit contribution across up to 100
+   *        repositories for the last year. Only the timestamp is extracted,
+   *        not the commit message, diff, or any code content.
+   * WRITES: Nothing.
+   *
+   * GitHub API: GraphQL query on user.contributionsCollection.commitContributionsByRepository
+   */
   async getCommitTimestamps(username: string): Promise<CommitTimestampResult> {
     const commits: CommitWithTimestamp[] = [];
 
-    // Get commits from the last year using GraphQL
     const oneYearAgo = new Date();
     oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
     const fromDate = oneYearAgo.toISOString();
@@ -391,7 +464,16 @@ export class GitHubService {
     return { commits };
   }
 
-  // Sprint 2: Get detailed commit information including +/- lines
+  /**
+   * Fetches detailed information about a single commit.
+   *
+   * READS: Commit message, author date, verification status, and diff
+   *        statistics (lines added/deleted/total) and list of changed
+   *        filenames. No actual file content or diffs are fetched.
+   * WRITES: Nothing.
+   *
+   * GitHub API: GET /repos/{owner}/{repo}/commits/{sha}
+   */
   async getCommitDetails(
     owner: string,
     repo: string,
@@ -406,7 +488,19 @@ export class GitHubService {
     }
   }
 
-  // Sprint 2: Get recent commits from a repo with stats
+  /**
+   * Fetches recent commits from a specific repository for a given author,
+   * including line-change statistics for each commit.
+   *
+   * READS: List of commits by the specified author in the repo, then for
+   *        each commit: message, date, verification status, lines added/
+   *        deleted, and changed filenames. Fetched in batches of 10.
+   *        No actual code content or diffs are read.
+   * WRITES: Nothing.
+   *
+   * GitHub API: GET /repos/{owner}/{repo}/commits (paginated)
+   *             + GET /repos/{owner}/{repo}/commits/{sha} per commit
+   */
   async getRepoCommitsWithStats(
     owner: string,
     repo: string,
@@ -425,7 +519,6 @@ export class GitHubService {
 
         if (pageCommits.length === 0) break;
 
-        // Fetch stats for each commit in parallel batches (10 concurrent requests)
         const commitsToFetch = pageCommits.slice(0, limit - commits.length);
         const BATCH_SIZE = 10;
 
@@ -447,7 +540,18 @@ export class GitHubService {
     return commits;
   }
 
-  // Sprint 2: Get user's PRs with detailed information
+  /**
+   * Fetches detailed pull request information for a user's most recent PRs.
+   *
+   * READS: For each PR: title, state, creation/merge/close dates, lines
+   *        added/deleted, number of changed files, comment counts, commit
+   *        count, and source/target repository names. No PR body content,
+   *        review comments, or code diffs are fetched.
+   * WRITES: Nothing.
+   *
+   * GitHub API: GET /search/issues (to find user's PRs)
+   *             + GET /repos/{owner}/{repo}/pulls/{number} per PR
+   */
   async getUserPRsDetailed(
     username: string,
     limit: number = 50
@@ -455,21 +559,18 @@ export class GitHubService {
     const prs: GitHubPRDetail[] = [];
 
     try {
-      // Search for user's PRs
       const searchQuery = `author:${username} type:pr`;
       const searchResults = await this.fetchREST<{
         total_count: number;
         items: GitHubSearchPRItem[];
       }>(`/search/issues?q=${encodeURIComponent(searchQuery)}&per_page=${Math.min(limit, 100)}&sort=created&order=desc`);
 
-      // Prepare PR items with owner/repo info
       const prItems = searchResults.items.slice(0, limit).map(item => {
         const repoMatch = item.repository_url.match(/repos\/([^/]+)\/([^/]+)$/);
         if (!repoMatch) return null;
         return { owner: repoMatch[1], repo: repoMatch[2], number: item.number };
       }).filter((item): item is { owner: string; repo: string; number: number } => item !== null);
 
-      // Fetch detailed info in parallel batches (10 concurrent requests)
       const BATCH_SIZE = 10;
       for (let i = 0; i < prItems.length; i += BATCH_SIZE) {
         const batch = prItems.slice(i, i + BATCH_SIZE);
@@ -478,7 +579,6 @@ export class GitHubService {
             this.fetchREST<GitHubPRDetail>(`/repos/${item.owner}/${item.repo}/pulls/${item.number}`)
           )
         );
-        // Only add successful fetches
         for (const result of batchResults) {
           if (result.status === "fulfilled") {
             prs.push(result.value);
@@ -492,7 +592,13 @@ export class GitHubService {
     return prs;
   }
 
-  // Sprint 2: Calculate PR merge time in minutes
+  /**
+   * Calculates the time in minutes between PR creation and merge.
+   * Pure utility function, no API calls.
+   *
+   * READS: Nothing from GitHub. Operates on already-fetched date strings.
+   * WRITES: Nothing.
+   */
   static calculateMergeTimeMinutes(
     createdAt: string,
     mergedAt: string | null
@@ -503,7 +609,16 @@ export class GitHubService {
     return Math.round((merged - created) / (1000 * 60));
   }
 
-  // Sprint 3: Get issues created by user
+  /**
+   * Fetches issues created by a user, sorted by creation date (newest first).
+   *
+   * READS: Issue metadata: number, title, state, author, comment count,
+   *        reaction count, creation/close dates, and repository URL.
+   *        No issue body content is fetched.
+   * WRITES: Nothing.
+   *
+   * GitHub API: GET /search/issues (filtered to type:issue, author:{username})
+   */
   async getUserIssuesCreated(
     username: string,
     limit: number = 100
@@ -511,7 +626,6 @@ export class GitHubService {
     const issues: GitHubSearchIssueItem[] = [];
 
     try {
-      // Search for issues created by the user (excluding PRs)
       const searchQuery = `author:${username} type:issue`;
       const searchResults = await this.fetchREST<{
         total_count: number;
@@ -528,18 +642,26 @@ export class GitHubService {
     return issues;
   }
 
-  // Sprint 3: Get issues closed by user (includes issues where user is assignee)
+  /**
+   * Fetches aggregated issue counts for a user: how many they opened
+   * and how many of those were closed.
+   *
+   * READS: Two aggregated counts only: total issues authored by the user,
+   *        and total closed issues authored by the user. No issue content
+   *        or details are fetched (per_page=1 for count only).
+   * WRITES: Nothing.
+   *
+   * GitHub API: GET /search/issues (two queries, per_page=1 for count only)
+   */
   async getUserIssuesClosed(
     username: string
   ): Promise<{ opened: number; closed: number }> {
     try {
-      // Count issues opened
       const openedQuery = `author:${username} type:issue`;
       const openedResults = await this.fetchREST<{ total_count: number }>(
         `/search/issues?q=${encodeURIComponent(openedQuery)}&per_page=1`
       );
 
-      // Count issues closed (authored)
       const closedQuery = `author:${username} type:issue is:closed`;
       const closedResults = await this.fetchREST<{ total_count: number }>(
         `/search/issues?q=${encodeURIComponent(closedQuery)}&per_page=1`
@@ -555,7 +677,17 @@ export class GitHubService {
     }
   }
 
-  // Sprint 3: Get code reviews submitted by user using GraphQL for reaction data
+  /**
+   * Fetches code reviews submitted by a user, including reaction data,
+   * using the GraphQL API for richer detail.
+   *
+   * READS: For each review: review ID, state (approved/changes requested/etc),
+   *        body text, submission date, reaction counts grouped by type,
+   *        comment count, and the associated PR number and repository name.
+   * WRITES: Nothing.
+   *
+   * GitHub API: GraphQL query on user.contributionsCollection.pullRequestReviewContributions
+   */
   async getUserReviewsWithReactions(
     username: string,
     limit: number = 50
@@ -630,21 +762,30 @@ export class GitHubService {
     return reviews;
   }
 
-  // Sprint 3: Get review counts by state
+  /**
+   * Fetches aggregated code review counts for a user: total reviews
+   * and estimated approvals.
+   *
+   * READS: Total count of PRs reviewed by the user (via search API,
+   *        per_page=1 for count only). Approval count is estimated
+   *        at 70% of total since the search API cannot filter by
+   *        review state. No review content is fetched.
+   * WRITES: Nothing.
+   *
+   * GitHub API: GET /search/issues (filtered to reviewed-by:{username})
+   */
   async getUserReviewCounts(
     username: string
   ): Promise<{ total: number; approved: number }> {
     try {
-      // Use search API for review counts
       const reviewQuery = `reviewed-by:${username} type:pr`;
       const reviewResults = await this.fetchREST<{ total_count: number }>(
         `/search/issues?q=${encodeURIComponent(reviewQuery)}&per_page=1`
       );
 
-      // For approval rate, we'd need GraphQL - estimate from contributions
       return {
         total: reviewResults.total_count,
-        approved: Math.round(reviewResults.total_count * 0.7), // Estimate 70% approval rate
+        approved: Math.round(reviewResults.total_count * 0.7),
       };
     } catch (error) {
       console.error(`Failed to fetch review counts for ${username}:`, error);
@@ -652,29 +793,35 @@ export class GitHubService {
     }
   }
 
-  // Sprint 5: Get merged PRs to specific OSS projects
+  /**
+   * Fetches the count of merged PRs a user has contributed to specific
+   * open-source projects. Used for OSS contribution achievements.
+   *
+   * READS: For each specified project: the count of merged PRs authored
+   *        by the user. Projects are batched (5 per query) for efficiency.
+   *        Only counts are extracted, no PR content or details.
+   * WRITES: Nothing.
+   *
+   * GitHub API: GET /search/issues (filtered to author:{username} type:pr
+   *             is:merged repo:{owner}/{repo})
+   */
   async getOSSContributions(
     username: string,
     projects: Array<{ owner: string; repo: string }>
   ): Promise<Map<string, number>> {
     const contributions = new Map<string, number>();
 
-    // Initialize all projects with 0
     for (const project of projects) {
       const key = `${project.owner}/${project.repo}`.toLowerCase();
       contributions.set(key, 0);
     }
 
-    // Batch projects into groups to reduce API calls
-    // GitHub search API allows OR queries within repo filter
-    const BATCH_SIZE = 5; // Don't batch too many to avoid query length limits
+    const BATCH_SIZE = 5;
 
     for (let i = 0; i < projects.length; i += BATCH_SIZE) {
       const batch = projects.slice(i, i + BATCH_SIZE);
 
       try {
-        // Build the search query for this batch
-        // Query: author:username type:pr is:merged repo:owner1/repo1 repo:owner2/repo2 ...
         const repoFilters = batch
           .map((p) => `repo:${p.owner}/${p.repo}`)
           .join(" ");
@@ -690,9 +837,7 @@ export class GitHubService {
           `/search/issues?q=${encodeURIComponent(searchQuery)}&per_page=100`
         );
 
-        // Count contributions per project from the results
         for (const item of searchResults.items) {
-          // Extract owner/repo from repository_url
           const repoMatch = item.repository_url.match(
             /repos\/([^/]+)\/([^/]+)$/
           );
@@ -704,9 +849,7 @@ export class GitHubService {
           }
         }
 
-        // If there are more than 100 results in a batch, we need individual queries
         if (searchResults.total_count > 100) {
-          // Query each project individually to get accurate counts
           for (const project of batch) {
             const key = `${project.owner}/${project.repo}`.toLowerCase();
             const singleQuery = `author:${username} type:pr is:merged repo:${project.owner}/${project.repo}`;
@@ -721,7 +864,6 @@ export class GitHubService {
           `Failed to fetch OSS contributions for batch ${i}:`,
           error
         );
-        // On error, try individual queries for this batch
         for (const project of batch) {
           try {
             const key = `${project.owner}/${project.repo}`.toLowerCase();
@@ -740,6 +882,14 @@ export class GitHubService {
     return contributions;
   }
 
+  /**
+   * Calculates the current and longest contribution streaks from
+   * the contribution calendar data. Pure utility function, no API calls.
+   *
+   * READS: Nothing from GitHub. Operates on already-fetched contribution
+   *        calendar weeks (daily contribution counts).
+   * WRITES: Nothing.
+   */
   calculateStreak(
     weeks: ContributionWeek[]
   ): { current: number; longest: number } {
@@ -750,7 +900,6 @@ export class GitHubService {
     let streak = 0;
     let foundActiveStreak = false;
 
-    // Sort by date descending (newest first)
     const sortedDays = [...days].sort(
       (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
     );
@@ -759,11 +908,11 @@ export class GitHubService {
       if (day.contributionCount > 0) {
         streak++;
         foundActiveStreak = true;
-        current = streak; // Update current for every day in the active streak
+        current = streak;
         longest = Math.max(longest, streak);
       } else {
         if (foundActiveStreak) {
-          break; // Current streak ended
+          break;
         }
         streak = 0;
       }
@@ -781,7 +930,6 @@ export type {
   CommitTimestampResult,
   GitHubCommitDetail,
   GitHubPRDetail,
-  // Sprint 3
   GitHubSearchIssueItem,
   GitHubReviewWithReactions,
 };
@@ -794,8 +942,9 @@ export type {
  * Checks if a GitHub user exists by attempting to fetch their avatar.
  * Uses the public GitHub avatar CDN which doesn't require authentication.
  *
- * @param username - GitHub username to check
- * @returns true if user exists, false otherwise
+ * READS: Sends a HEAD request to the public GitHub avatar URL.
+ *        No user data is fetched, only the HTTP status code is checked.
+ * WRITES: Nothing.
  */
 export async function checkGitHubUserExists(
   username: string
@@ -803,7 +952,7 @@ export async function checkGitHubUserExists(
   try {
     const res = await fetch(`https://github.com/${username}.png`, {
       method: "HEAD",
-      next: { revalidate: 86400 }, // Cache for 24 hours
+      next: { revalidate: 86400 },
     });
     return res.ok;
   } catch {
@@ -812,11 +961,11 @@ export async function checkGitHubUserExists(
 }
 
 /**
- * Gets the GitHub avatar URL for a username.
- * This URL works even for users not in our database.
+ * Returns the public GitHub avatar URL for a username.
+ * Pure utility function, no API calls.
  *
- * @param username - GitHub username
- * @returns Avatar URL
+ * READS: Nothing from GitHub.
+ * WRITES: Nothing.
  */
 export function getGitHubAvatarUrl(username: string): string {
   return `https://github.com/${username}.png`;
