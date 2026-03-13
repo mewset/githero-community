@@ -7,7 +7,8 @@
  * Every function documents exactly what GitHub data it reads and how.
  *
  * GitHero operates on a STRICT READ-ONLY basis:
- *   - We ONLY use GitHub's REST API (GET requests) and GraphQL API (queries).
+ *   - We ONLY use GitHub's REST API (GET requests) and GraphQL API (queries),
+ *     pinned to API version 2026-03-10 via X-GitHub-Api-Version header.
  *   - We NEVER perform mutations, writes, or modifications to any user data.
  *   - We NEVER create, update, or delete repositories, issues, PRs, or any other resource.
  *   - We NEVER store raw GitHub API responses. Data is processed into aggregated
@@ -200,18 +201,12 @@ export class GitHubService {
    *
    * Used by all REST-based methods in this class to fetch data from GitHub.
    */
-  private async fetchREST<T>(
-    endpoint: string,
-    options?: { includeTopics?: boolean }
-  ): Promise<T> {
+  private async fetchREST<T>(endpoint: string): Promise<T> {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.accessToken}`,
       Accept: "application/vnd.github.v3+json",
+      "X-GitHub-Api-Version": "2026-03-10",
     };
-
-    if (options?.includeTopics) {
-      headers.Accept = "application/vnd.github.mercy-preview+json";
-    }
 
     const response = await fetch(`https://api.github.com${endpoint}`, {
       headers,
@@ -246,14 +241,18 @@ export class GitHubService {
    * Although GraphQL uses HTTP POST, this is only for sending the query payload.
    * No mutations are ever constructed or sent through this method.
    */
-  private async fetchGraphQL<T>(query: string): Promise<T> {
+  private async fetchGraphQL<T>(
+    query: string,
+    variables?: Record<string, unknown>
+  ): Promise<T> {
     const response = await fetch("https://api.github.com/graphql", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.accessToken}`,
         "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2026-03-10",
       },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify(variables ? { query, variables } : { query }),
     });
 
     if (!response.ok) {
@@ -309,8 +308,7 @@ export class GitHubService {
 
     while (true) {
       const pageRepos = await this.fetchREST<GitHubRepo[]>(
-        `/user/repos?per_page=${perPage}&page=${page}&type=all`,
-        { includeTopics: true }
+        `/user/repos?per_page=${perPage}&page=${page}&type=all`
       );
       repos.push(...pageRepos);
 
@@ -729,25 +727,18 @@ export class GitHubService {
     `;
 
     try {
-      const response = await fetch("https://api.github.com/graphql", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          query,
-          variables: { username, first: Math.min(limit, 100) },
-        }),
-      });
+      const data = await this.fetchGraphQL<{
+        user: {
+          contributionsCollection: {
+            pullRequestReviewContributions: {
+              nodes: Array<{ pullRequestReview: GitHubReviewWithReactions | null }>;
+            };
+          };
+        } | null;
+      }>(query, { username, first: Math.min(limit, 100) });
 
-      if (!response.ok) {
-        throw new Error(`GitHub GraphQL error: ${response.status}`);
-      }
-
-      const data = await response.json();
       const contributions =
-        data.data?.user?.contributionsCollection?.pullRequestReviewContributions
+        data.user?.contributionsCollection?.pullRequestReviewContributions
           ?.nodes || [];
 
       for (const contribution of contributions) {
