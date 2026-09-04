@@ -877,35 +877,48 @@ export class GitHubService {
    * Calculates the current and longest contribution streaks from
    * the contribution calendar data. Pure utility function, no API calls.
    *
+   * - `longest` is the longest run of consecutive days with contributions
+   *   anywhere in the calendar.
+   * - `current` is the run of consecutive contribution days ending today.
+   *   Today is allowed to be empty (the user may still contribute later),
+   *   in which case the run ending yesterday counts. Any other gap ends
+   *   the current streak at 0.
+   *
+   * GitHub's contribution calendar is UTC-based, so `today` defaults to
+   * the current UTC date. It can be passed explicitly for deterministic tests.
+   *
    * READS: Nothing from GitHub. Operates on already-fetched contribution
    *        calendar weeks (daily contribution counts).
    * WRITES: Nothing.
    */
   calculateStreak(
-    weeks: ContributionWeek[]
+    weeks: ContributionWeek[],
+    today: string = new Date().toISOString().slice(0, 10)
   ): { current: number; longest: number } {
     const days = weeks.flatMap((w) => w.contributionDays);
 
-    let current = 0;
-    let longest = 0;
-    let streak = 0;
-    let foundActiveStreak = false;
-
+    // Newest first
     const sortedDays = [...days].sort(
       (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
     );
 
+    // Longest: scan every day, track the max run.
+    let longest = 0;
+    let run = 0;
+    for (const day of sortedDays) {
+      run = day.contributionCount > 0 ? run + 1 : 0;
+      longest = Math.max(longest, run);
+    }
+
+    // Current: count from the newest day, tolerating an empty "today" only.
+    let current = 0;
     for (const day of sortedDays) {
       if (day.contributionCount > 0) {
-        streak++;
-        foundActiveStreak = true;
-        current = streak;
-        longest = Math.max(longest, streak);
+        current++;
+      } else if (day.date === today && current === 0) {
+        continue;
       } else {
-        if (foundActiveStreak) {
-          break;
-        }
-        streak = 0;
+        break;
       }
     }
 
