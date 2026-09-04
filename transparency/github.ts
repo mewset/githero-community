@@ -186,6 +186,59 @@ interface ContributionsCollection {
   };
 }
 
+export interface AllTimeContributions {
+  totalCommits: number;   // sum of totalCommitContributions over all years
+  totalReviews: number;   // sum of totalPullRequestReviewContributions over all years
+  activeDays: number;     // distinct days with contributionCount > 0
+  longestStreak: number;  // longest run of consecutive active days, all-time
+}
+
+interface YearContributions {
+  totalCommitContributions: number;
+  totalPullRequestReviewContributions: number;
+  contributionCalendar: { weeks: ContributionWeek[] };
+}
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Pure helper: counts active days and the longest streak over a list of
+ * calendar days. Dates may repeat (calendars from adjacent years overlap on
+ * the boundary week) and may arrive in any order.
+ */
+export function summarizeContributionDays(
+  days: ContributionDay[]
+): { activeDays: number; longestStreak: number } {
+  const byDate = new Map<string, number>();
+  for (const day of days) {
+    byDate.set(day.date, Math.max(byDate.get(day.date) ?? 0, day.contributionCount));
+  }
+
+  const dates = Array.from(byDate.keys()).sort();
+  let activeDays = 0;
+  let longestStreak = 0;
+  let run = 0;
+  let previousActiveMs = Number.NEGATIVE_INFINITY;
+
+  for (const date of dates) {
+    if ((byDate.get(date) ?? 0) <= 0) continue;
+    activeDays++;
+    const ms = Date.parse(`${date}T00:00:00Z`);
+    run = ms - previousActiveMs === ONE_DAY_MS ? run + 1 : 1;
+    previousActiveMs = ms;
+    longestStreak = Math.max(longestStreak, run);
+  }
+
+  return { activeDays, longestStreak };
+}
+
+export interface PullRequestCounts {
+  total: number;          // all PRs authored by the user
+  merged: number;         // merged PRs authored by the user
+  totalExternal: number;  // authored PRs in repos NOT owned by the user
+  mergedExternal: number; // merged PRs in repos NOT owned by the user
+}
+
 export class GitHubService {
   private accessToken: string;
 
@@ -273,6 +326,11 @@ export class GitHubService {
     }
 
     const data = await response.json();
+
+    if (Array.isArray(data.errors) && data.errors.length > 0) {
+      throw new Error(`GitHub GraphQL error: ${data.errors[0].message}`);
+    }
+
     return data.data;
   }
 
@@ -329,9 +387,7 @@ export class GitHubService {
    *
    * GitHub API: GraphQL query on user.contributionsCollection
    */
-  async getContributions(
-    username: string
-  ): Promise<ContributionsCollection | null> {
+  async getContributions(username: string): Promise<ContributionsCollection> {
     const query = `
       query {
         user(login: "${username}") {
@@ -353,43 +409,111 @@ export class GitHubService {
       }
     `;
 
-    try {
-      const data = await this.fetchGraphQL<{
-        user: { contributionsCollection: ContributionsCollection } | null;
-      }>(query);
-      return data.user?.contributionsCollection || null;
-    } catch {
-      return null;
+    const data = await this.fetchGraphQL<{
+      user: { contributionsCollection: ContributionsCollection } | null;
+    }>(query);
+
+    if (!data?.user) {
+      throw new Error(`GitHub user not found: ${username}`);
     }
+    return data.user.contributionsCollection;
   }
 
   /**
-   * Fetches the total and merged pull request counts for a user.
+   * Fetches lifetime contribution totals by querying one
+   * contributionsCollection per calendar year since the account was created.
    *
-   * READS: Two aggregated counts only: total number of PRs authored by the
-   *        user, and total number of merged PRs authored by the user.
-   *        No PR content, titles, or details are fetched.
+   * READS: Per year: total commit contributions, total PR review
+   *        contributions, and the daily contribution calendar. Aggregated
+   *        into lifetime totals, active-day count and longest streak.
    * WRITES: Nothing.
    *
-   * GitHub API: GET /search/issues (with per_page=1 for count only)
+   * GitHub API: One GraphQL request with an alias per year
+   * (contributionsCollection accepts at most a one-year window).
    */
-  async getPullRequests(
-    username: string
-  ): Promise<{ total: number; merged: number }> {
-    const query = `author:${username} type:pr`;
-    const response = await this.fetchREST<{ total_count: number }>(
-      `/search/issues?q=${encodeURIComponent(query)}&per_page=1`
-    );
+  async getAllTimeContributions(
+    username: string,
+    accountCreatedAt: Date
+  ): Promise<AllTimeContributions> {
+    const now = new Date();
+    const firstYear = accountCreatedAt.getUTCFullYear();
+    const currentYear = now.getUTCFullYear();
 
-    const mergedQuery = `author:${username} type:pr is:merged`;
-    const mergedResponse = await this.fetchREST<{ total_count: number }>(
-      `/search/issues?q=${encodeURIComponent(mergedQuery)}&per_page=1`
-    );
+    const years: number[] = [];
+    for (let year = firstYear; year <= currentYear; year++) years.push(year);
 
-    return {
-      total: response.total_count,
-      merged: mergedResponse.total_count,
+    const aliases = years
+      .map((year) => {
+        const from = `${year}-01-01T00:00:00Z`;
+        const to = year === currentYear ? now.toISOString() : `${year}-12-31T23:59:59Z`;
+        return `y${year}: contributionsCollection(from: "${from}", to: "${to}") {
+          totalCommitContributions
+          totalPullRequestReviewContributions
+          contributionCalendar { weeks { contributionDays { date contributionCount } } }
+        }`;
+      })
+      .join("\n");
+
+    const query = `query { user(login: "${username}") { ${aliases} } }`;
+
+    const data = await this.fetchGraphQL<{
+      user: Record<string, YearContributions> | null;
+    }>(query);
+
+    if (!data?.user) {
+      throw new Error(`GitHub user not found: ${username}`);
+    }
+
+    let totalCommits = 0;
+    let totalReviews = 0;
+    const days: ContributionDay[] = [];
+
+    for (const year of years) {
+      const block = data.user[`y${year}`];
+      if (!block) {
+        throw new Error(
+          `GitHub returned no contribution data for ${username} in ${year}`
+        );
+      }
+      totalCommits += block.totalCommitContributions;
+      totalReviews += block.totalPullRequestReviewContributions;
+      for (const week of block.contributionCalendar.weeks) {
+        days.push(...week.contributionDays);
+      }
+    }
+
+    const { activeDays, longestStreak } = summarizeContributionDays(days);
+    return { totalCommits, totalReviews, activeDays, longestStreak };
+  }
+
+  /**
+   * Fetches pull request counts for a user, split by ownership of the
+   * target repository.
+   *
+   * READS: Four aggregated counts only: total authored PRs, merged authored
+   *        PRs, and the same two restricted to repositories not owned by the
+   *        user (`-user:{username}`). No PR content, titles, or details.
+   * WRITES: Nothing.
+   *
+   * GitHub API: GET /search/issues (per_page=1, total_count only). Calls are
+   * sequential on purpose: the search API applies secondary rate limits to
+   * concurrent requests.
+   */
+  async getPullRequests(username: string): Promise<PullRequestCounts> {
+    const count = async (q: string): Promise<number> => {
+      const res = await this.fetchREST<{ total_count: number }>(
+        `/search/issues?q=${encodeURIComponent(q)}&per_page=1`
+      );
+      return res.total_count;
     };
+
+    const base = `author:${username} type:pr`;
+    const total = await count(base);
+    const merged = await count(`${base} is:merged`);
+    const totalExternal = await count(`${base} -user:${username}`);
+    const mergedExternal = await count(`${base} is:merged -user:${username}`);
+
+    return { total, merged, totalExternal, mergedExternal };
   }
 
   /**
@@ -654,25 +778,20 @@ export class GitHubService {
   async getUserIssuesClosed(
     username: string
   ): Promise<{ opened: number; closed: number }> {
-    try {
-      const openedQuery = `author:${username} type:issue`;
-      const openedResults = await this.fetchREST<{ total_count: number }>(
-        `/search/issues?q=${encodeURIComponent(openedQuery)}&per_page=1`
-      );
+    const openedQuery = `author:${username} type:issue`;
+    const openedResults = await this.fetchREST<{ total_count: number }>(
+      `/search/issues?q=${encodeURIComponent(openedQuery)}&per_page=1`
+    );
 
-      const closedQuery = `author:${username} type:issue is:closed`;
-      const closedResults = await this.fetchREST<{ total_count: number }>(
-        `/search/issues?q=${encodeURIComponent(closedQuery)}&per_page=1`
-      );
+    const closedQuery = `author:${username} type:issue is:closed`;
+    const closedResults = await this.fetchREST<{ total_count: number }>(
+      `/search/issues?q=${encodeURIComponent(closedQuery)}&per_page=1`
+    );
 
-      return {
-        opened: openedResults.total_count,
-        closed: closedResults.total_count,
-      };
-    } catch (error) {
-      console.error(`Failed to fetch issue counts for ${username}:`, error);
-      return { opened: 0, closed: 0 };
-    }
+    return {
+      opened: openedResults.total_count,
+      closed: closedResults.total_count,
+    };
   }
 
   /**
@@ -929,6 +1048,7 @@ export class GitHubService {
 export type {
   GitHubUser,
   GitHubRepo,
+  ContributionDay,
   ContributionWeek,
   CommitWithTimestamp,
   CommitTimestampResult,
